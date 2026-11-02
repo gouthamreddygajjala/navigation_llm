@@ -156,7 +156,7 @@ def generate_launch_description():
         description='Initial robot Y coordinate in meters'
     )
     declare_world_cmd = DeclareLaunchArgument(
-        'world', default_value=os.path.join(pkg_tb3_nav2_web, 'worlds', 'obstacle_world.world'),
+        'world', default_value=os.path.join(pkg_tb3_nav2_web, 'worlds', 'house_world.world'),
         description='Full path to world SDF/world file'
     )
 

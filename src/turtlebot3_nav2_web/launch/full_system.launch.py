@@ -50,9 +50,9 @@ def generate_launch_description():
         }.items()
     )
 
-    # 2. Nav2 Navigation Stack (Delayed slightly by 4 seconds to give Gazebo time to spawn)
+    # 2. Nav2 Navigation Stack (Delayed 8 seconds to give Gazebo time to spawn the robot and load the world)
     navigation_cmd = TimerAction(
-        period=4.0,
+        period=8.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(

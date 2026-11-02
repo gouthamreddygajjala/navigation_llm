@@ -35,7 +35,7 @@ def launch_setup(context, *args, **kwargs):
         params_file_eval = default_params
 
     # Resolve map file
-    default_map = os.path.join(pkg_tb3_nav2_web, 'maps', 'map.yaml')
+    default_map = os.path.join(pkg_tb3_nav2_web, 'maps', 'house_map.yaml')
     map_file_eval = ''
     try:
         map_file_eval = LaunchConfiguration('map').perform(context)
@@ -72,7 +72,7 @@ def generate_launch_description():
         description='TurtleBot3 model: burger, waffle, waffle_pi'
     )
     declare_map_cmd = DeclareLaunchArgument(
-        'map', default_value=os.path.join(pkg_tb3_nav2_web, 'maps', 'map.yaml'),
+        'map', default_value=os.path.join(pkg_tb3_nav2_web, 'maps', 'house_map.yaml'),
         description='Full path to map file to load'
     )
     declare_params_cmd = DeclareLaunchArgument(

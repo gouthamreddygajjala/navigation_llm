@@ -644,3 +644,270 @@ body {
 .log-entry.success { color: #34d399; }
 .log-entry.warning { color: #fbbf24; }
 .log-entry.error { color: #f87171; }
+
+/* ==========================================================================
+   AI LLM Voice & Chat Navigator Styles
+   ========================================================================== */
+.ai-llm-card {
+  border-color: rgba(139, 92, 246, 0.45);
+  background: linear-gradient(180deg, rgba(30, 27, 75, 0.45) 0%, rgba(17, 24, 39, 0.9) 100%);
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.15);
+}
+
+.ai-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #c4b5fd;
+}
+
+.ai-sparkle {
+  font-size: 14px;
+  animation: pulse-glow 2s infinite ease-in-out;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.8; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.ai-model-badge {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: rgba(139, 92, 246, 0.5);
+  color: #d8b4fe;
+  font-weight: 700;
+}
+
+.llm-chat-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-messages {
+  background-color: #030712;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  max-height: 190px;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-msg {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-msg.user {
+  flex-direction: row-reverse;
+}
+
+.msg-avatar {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.msg-content {
+  max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-msg.assistant .msg-bubble {
+  background: rgba(31, 41, 55, 0.85);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: #e5e7eb;
+}
+
+.chat-msg.user .msg-bubble {
+  background: linear-gradient(135deg, #0284c7, #2563eb);
+  border-radius: var(--radius-sm);
+  padding: 7px 11px;
+  color: #fff;
+  font-weight: 500;
+}
+
+.chat-thought {
+  font-size: 10.5px;
+  color: #94a3b8;
+  font-style: italic;
+  padding: 2px 4px;
+}
+
+.chat-target-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.chat-thinking {
+  color: #c4b5fd;
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-thinking .dot-pulse {
+  display: inline-block;
+  animation: dot-wave 1.4s infinite ease-in-out;
+}
+
+@keyframes dot-wave {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+/* Prompt Chips */
+.prompt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.prompt-chip {
+  background-color: var(--bg-surface);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: #cbd5e1;
+  padding: 4px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.prompt-chip:hover {
+  background: rgba(139, 92, 246, 0.25);
+  border-color: #a78bfa;
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+/* Chat Input Bar */
+.chat-input-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-input-bar input {
+  flex: 1;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #fff;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.chat-input-bar input:focus {
+  border-color: #a78bfa;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.3);
+}
+
+.btn-ai-send {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+  transition: all 0.15s ease;
+}
+
+.btn-ai-send:hover {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   House Rooms Quick Dispatch Grid
+   ========================================================================== */
+.rooms-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.room-chip {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+  text-align: left;
+}
+
+.room-chip:hover {
+  background-color: var(--bg-surface-elevated);
+  border-color: var(--accent-blue);
+  transform: translateY(-1px);
+}
+
+.room-chip.active-room {
+  border-color: var(--accent-green);
+  background: rgba(16, 185, 129, 0.15);
+}
+
+.room-icon {
+  font-size: 14px;
+}
+
+.room-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-dist {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+

@@ -49,7 +49,9 @@
       startPan: { x: 0, y: 0 },
       targetStartWorld: { x: 0, y: 0 }
     },
+    rooms: {},
     options: {
+      showRooms: true,
       showScan: true,
       showPath: true,
       showTrail: true
@@ -57,7 +59,9 @@
     teleop: {
       activeKeys: new Set(),
       timer: null,
-      speed: 0.18
+      speed: 0.18,
+      enabled: false,       // Requires explicit enable click before keys work
+      deadManTimer: null    // Stops robot if no input for 400ms
     }
   };
 
@@ -98,6 +102,15 @@
   const btnClearLog = document.getElementById('btn-clear-log');
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
+
+  // AI LLM & Rooms Elements
+  const toggleRooms = document.getElementById('toggle-rooms');
+  const chatForm = document.getElementById('chat-form');
+  const chatInput = document.getElementById('chat-input');
+  const chatMessages = document.getElementById('chat-messages');
+  const promptChips = document.querySelectorAll('.prompt-chip');
+  const aiModelBadge = document.getElementById('ai-model-badge');
+  const roomChips = document.querySelectorAll('.room-chip');
 
   // --- Logger Helper ---
   function addLog(text, level = 'info') {
@@ -221,6 +234,12 @@
       case 'scan':
         state.scan = msg.points || [];
         break;
+      case 'rooms':
+        handleRoomsMessage(msg.rooms);
+        break;
+      case 'llm_response':
+        handleLLMResponse(msg);
+        break;
       default:
         break;
     }
@@ -289,6 +308,25 @@
         valDistRemain.textContent = `${msg.nav_feedback.distance_remaining.toFixed(2)} m`;
       } else {
         valDistRemain.textContent = '--';
+      }
+    }
+
+    // Update dynamic distances to house rooms
+    updateRoomDistances();
+  }
+
+  function handleRoomsMessage(rooms) {
+    state.rooms = rooms || {};
+    updateRoomDistances();
+  }
+
+  function updateRoomDistances() {
+    if (!state.rooms) return;
+    for (const [roomId, r] of Object.entries(state.rooms)) {
+      const dist = Math.hypot(state.robot.x - r.x, state.robot.y - r.y);
+      const el = document.getElementById(`dist-${roomId}`);
+      if (el) {
+        el.textContent = `${dist.toFixed(1)}m`;
       }
     }
   }
@@ -486,6 +524,179 @@
     });
   });
 
+  // House Room Quick Chips
+  roomChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      const x = parseFloat(chip.dataset.x);
+      const y = parseFloat(chip.dataset.y);
+      const yawDeg = parseFloat(chip.dataset.yaw);
+      const yaw = yawDeg * Math.PI / 180;
+      const roomName = chip.querySelector('.room-name').textContent;
+
+      state.target.x = x;
+      state.target.y = y;
+      state.target.yaw = yaw;
+      state.target.active = true;
+      updateTargetInputs(x, y, yaw);
+
+      // Highlight active room chip
+      roomChips.forEach(c => c.classList.remove('active-room'));
+      chip.classList.add('active-room');
+
+      // Dispatch navigation goal directly
+      if (state.connected) {
+        state.ws.send(JSON.stringify({
+          action: 'navigate',
+          x: x,
+          y: y,
+          yaw: yaw
+        }));
+        addLog(`Direct Nav to Room: ${roomName} -> (${x.toFixed(2)}, ${y.toFixed(2)})`, 'info');
+      }
+    });
+  });
+
+  // --- AI LLM Voice & Chat Navigator Handlers ---
+  function sendLLMPrompt(promptText) {
+    if (!promptText || !promptText.trim()) return;
+    promptText = promptText.trim();
+
+    if (!state.connected) {
+      alert('Local Nav2 server is not connected!');
+      return;
+    }
+
+    // Append user message bubble
+    appendChatMessage('user', promptText);
+
+    // Append thinking placeholder
+    const thinkingId = 'thinking-' + Date.now();
+    const thinkingEl = document.createElement('div');
+    thinkingEl.className = 'chat-msg assistant thinking-placeholder';
+    thinkingEl.id = thinkingId;
+    thinkingEl.innerHTML = `
+      <div class="msg-avatar">🤖</div>
+      <div class="msg-content">
+        <div class="msg-bubble chat-thinking">
+          <span class="ai-sparkle">✨</span>
+          <span>Reasoning with local LLM...</span>
+        </div>
+      </div>
+    `;
+    chatMessages.appendChild(thinkingEl);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    // Send action over WebSocket
+    state.ws.send(JSON.stringify({
+      action: 'llm_chat',
+      prompt: promptText
+    }));
+
+    addLog(`Sent prompt to LLM: "${promptText}"`, 'info');
+  }
+
+  function handleLLMResponse(msg) {
+    // Remove thinking placeholder
+    document.querySelectorAll('.thinking-placeholder').forEach(el => el.remove());
+
+    const result = msg.result || {};
+    const replyText = result.reply || "Command received.";
+    const thought = result.thought;
+    const model = result.model;
+
+    if (model && aiModelBadge) {
+      aiModelBadge.textContent = model.split(' ')[0];
+    }
+
+    // Build assistant response bubble
+    const msgEl = document.createElement('div');
+    msgEl.className = 'chat-msg assistant';
+
+    let contentHtml = `
+      <div class="msg-avatar">🤖</div>
+      <div class="msg-content">
+        <div class="msg-bubble">
+          ${escapeHtml(replyText).replace(/\n/g, '<br>')}
+    `;
+
+    if (result.action === 'navigate' && result.room_name) {
+      contentHtml += `
+          <div class="chat-target-tag">
+            <span>🎯</span>
+            <span>Target: <strong>${escapeHtml(result.room_name)}</strong> (${result.x.toFixed(2)}, ${result.y.toFixed(2)})</span>
+          </div>
+      `;
+
+      // Update active target coordinates on map
+      state.target.x = result.x;
+      state.target.y = result.y;
+      state.target.yaw = result.yaw || 0.0;
+      state.target.active = true;
+      updateTargetInputs(result.x, result.y, result.yaw || 0.0);
+
+      // Highlight the target room chip
+      if (result.target_room) {
+        roomChips.forEach(c => {
+          if (c.dataset.room === result.target_room) c.classList.add('active-room');
+          else c.classList.remove('active-room');
+        });
+      }
+
+      addLog(`AI dispatched goal -> ${result.room_name} (${result.x.toFixed(2)}, ${result.y.toFixed(2)})`, 'success');
+    }
+
+    contentHtml += `</div>`;
+
+    if (thought) {
+      contentHtml += `<div class="chat-thought">💭 ${escapeHtml(thought)}</div>`;
+    }
+
+    contentHtml += `</div>`;
+    msgEl.innerHTML = contentHtml;
+    chatMessages.appendChild(msgEl);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function appendChatMessage(role, text) {
+    const msgEl = document.createElement('div');
+    msgEl.className = `chat-msg ${role}`;
+    if (role === 'user') {
+      msgEl.innerHTML = `
+        <div class="msg-content">
+          <div class="msg-bubble">${escapeHtml(text)}</div>
+        </div>
+      `;
+    }
+    chatMessages.appendChild(msgEl);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // LLM Chat form submit
+  if (chatForm) {
+    chatForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = chatInput.value;
+      if (text) {
+        sendLLMPrompt(text);
+        chatInput.value = '';
+      }
+    });
+  }
+
+  // LLM Prompt Chips
+  promptChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      sendLLMPrompt(chip.dataset.prompt);
+    });
+  });
+
   // --- Goal Dispatch and Control ---
   btnSendGoal.addEventListener('click', () => {
     if (!state.connected) {
@@ -537,14 +748,24 @@
 
   function sendTeleop(lin, ang) {
     if (!state.connected) return;
+    // Don't send movement if teleop not explicitly enabled by user
+    if (!state.teleop.enabled && (lin !== 0 || ang !== 0)) return;
     state.ws.send(JSON.stringify({
       action: 'teleop',
       linear: lin,
       angular: ang
     }));
+    // Dead-man's switch: auto-stop after 400ms of no new input
+    if (state.teleop.deadManTimer) clearTimeout(state.teleop.deadManTimer);
+    if (lin !== 0 || ang !== 0) {
+      state.teleop.deadManTimer = setTimeout(() => {
+        state.ws.send(JSON.stringify({ action: 'teleop', linear: 0, angular: 0 }));
+      }, 400);
+    }
   }
 
   function handleTeleopDirection(action) {
+    state.teleop.enabled = true; // Actively allow movement from button click
     let lin = 0.0;
     let ang = 0.0;
     const maxLin = state.teleop.speed;
@@ -563,18 +784,48 @@
 
   // On-screen keypad buttons
   document.querySelectorAll('.key-btn').forEach(btn => {
-    btn.addEventListener('mousedown', () => {
+    const startAction = () => {
       const action = btn.dataset.action;
       handleTeleopDirection(action);
-    });
-    btn.addEventListener('mouseup', () => {
+    };
+    const stopAction = () => {
       sendTeleop(0, 0);
-    });
+    };
+
+    btn.addEventListener('mousedown', startAction);
+    btn.addEventListener('mouseup', stopAction);
+    btn.addEventListener('mouseleave', stopAction);
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); startAction(); });
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); stopAction(); });
   });
 
-  // Keyboard navigation
+  // Global blur listener: emergency stop when window or tab loses focus
+  window.addEventListener('blur', () => {
+    state.teleop.activeKeys.clear();
+    if (state.teleop.timer) {
+      clearInterval(state.teleop.timer);
+      state.teleop.timer = null;
+    }
+    sendTeleop(0, 0);
+  });
+
+  // Keyboard navigation — only active when teleop panel is focused
+  const teleopArea = document.getElementById('teleop-area');
+  if (teleopArea) {
+    teleopArea.addEventListener('focus', () => {
+      state.teleop.enabled = true;
+    });
+    teleopArea.addEventListener('blur', () => {
+      state.teleop.enabled = false;
+      // Stop robot when teleop loses focus
+      state.teleop.activeKeys.clear();
+      sendTeleop(0, 0);
+    });
+  }
+
   window.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+    if (!state.teleop.enabled) return;  // Must click teleop panel first
     const key = e.key.toLowerCase();
     if (['w', 'a', 's', 'd', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
       e.preventDefault();
@@ -621,6 +872,11 @@
   }
 
   // Layer Toggles
+  if (toggleRooms) {
+    toggleRooms.addEventListener('change', (e) => {
+      state.options.showRooms = e.target.checked;
+    });
+  }
   document.getElementById('toggle-scan').addEventListener('change', (e) => {
     state.options.showScan = e.target.checked;
   });
@@ -655,6 +911,11 @@
       ctx.strokeStyle = '#374151';
       ctx.lineWidth = 1 / state.viewport.scale;
       ctx.strokeRect(0, 0, state.map.metadata.width, state.map.metadata.height);
+    }
+
+    // 1.5. Draw House Room Zones & Labels
+    if (state.options.showRooms && state.rooms && state.map.metadata) {
+      drawRoomLabels();
     }
 
     // 2. Draw Robot Breadcrumb Trail
@@ -778,6 +1039,80 @@
     ctx.stroke();
 
     ctx.restore();
+  }
+
+  function drawRoomLabels() {
+    for (const [roomId, r] of Object.entries(state.rooms)) {
+      const { gx, gy } = worldToGrid(r.x, r.y);
+      const color = r.color || '#38bdf8';
+
+      ctx.save();
+      ctx.translate(gx, gy);
+
+      // 1. Soft glowing room ambient circle
+      const zoneRadius = 14.0 / state.viewport.scale;
+      const grad = ctx.createRadialGradient(0, 0, 1, 0, 0, zoneRadius * 2);
+      grad.addColorStop(0, color + '55');
+      grad.addColorStop(0.6, color + '22');
+      grad.addColorStop(1, 'transparent');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, zoneRadius * 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2. Room Center Pin
+      ctx.beginPath();
+      ctx.arc(0, 0, 4 / state.viewport.scale, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // 3. Room Label Badge Pill
+      const screenFontSize = 11.5;
+      const gridFontSize = screenFontSize / state.viewport.scale;
+      ctx.font = `600 ${gridFontSize}px "Plus Jakarta Sans", -apple-system, sans-serif`;
+
+      const labelText = `${r.icon || '📍'} ${r.name}`;
+      const textMetrics = ctx.measureText(labelText);
+      const padX = 7 / state.viewport.scale;
+      const padY = 3.5 / state.viewport.scale;
+      const pillWidth = textMetrics.width + padX * 2;
+      const pillHeight = gridFontSize + padY * 2;
+      const pillY = -zoneRadius - pillHeight;
+
+      // Pill Background
+      ctx.fillStyle = 'rgba(11, 15, 25, 0.9)';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.3 / state.viewport.scale;
+
+      const rx = -pillWidth / 2;
+      const ry = pillY;
+      const radius = 4 / state.viewport.scale;
+
+      ctx.beginPath();
+      ctx.moveTo(rx + radius, ry);
+      ctx.lineTo(rx + pillWidth - radius, ry);
+      ctx.quadraticCurveTo(rx + pillWidth, ry, rx + pillWidth, ry + radius);
+      ctx.lineTo(rx + pillWidth, ry + pillHeight - radius);
+      ctx.quadraticCurveTo(rx + pillWidth, ry + pillHeight, rx + pillWidth - radius, ry + pillHeight);
+      ctx.lineTo(rx + radius, ry + pillHeight);
+      ctx.quadraticCurveTo(rx, ry + pillHeight, rx, ry + pillHeight - radius);
+      ctx.lineTo(rx, ry + radius);
+      ctx.quadraticCurveTo(rx, ry, rx + radius, ry);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Label text
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, 0, pillY + pillHeight / 2);
+
+      ctx.restore();
+    }
   }
 
   function drawRobot(gx, gy, yaw) {

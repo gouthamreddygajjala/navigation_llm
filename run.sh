@@ -12,6 +12,7 @@ HEADLESS="false"
 PORT="8000"
 WEB_ONLY="false"
 NO_BROWSER="false"
+SLAM_MODE="false"
 
 print_usage() {
   echo "Usage: ./run.sh [OPTIONS]"
@@ -23,6 +24,7 @@ print_usage() {
   echo "  --web-only                         Launch only the local Web Server node"
   echo "  --no-browser                       Do not auto-open the browser tab"
   echo "  --build                            Rebuild workspace packages before launching"
+  echo "  --slam                             Launch in SLAM mapping mode (no Nav2, use teleop to map)"
   echo "  --help                             Show this help message"
   echo ""
 }
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       DO_BUILD="true"
       shift
       ;;
+    --slam)
+      SLAM_MODE="true"
+      shift
+      ;;
     --help|-h)
       print_usage
       exit 0
@@ -76,10 +82,12 @@ echo "  • Headless Sim: $HEADLESS"
 echo "  • Web Server  : http://localhost:$PORT"
 echo "================================================================="
 
-# Clean up any orphaned Gazebo or Nav2 instances from previous runs
-if pgrep -x "gzserver" > /dev/null 2>&1 || pgrep -x "controller_server" > /dev/null 2>&1; then
-  echo "⚠️  Cleaning up previous background simulation/nav2 instances..."
+# Clean up any orphaned Gazebo, Nav2, or Web Server instances from previous runs
+if pgrep -x "gzserver" > /dev/null 2>&1 || pgrep -x "controller_server" > /dev/null 2>&1 || pgrep -f "web_server_node" > /dev/null 2>&1; then
+  echo "⚠️  Cleaning up previous background simulation/nav2/web instances..."
   killall -9 gzserver gzclient controller_server smoother_server planner_server behavior_server bt_navigator 2>/dev/null || true
+  pkill -9 -f "web_server_node" 2>/dev/null || true
+  fuser -k "${PORT}/tcp" 2>/dev/null || true
   sleep 1
 fi
 
@@ -109,11 +117,9 @@ CLEAN_MODEL_PATH=$(echo "$GAZEBO_MODEL_PATH" | tr ':' '\n' | grep -v -E "^/opt/r
 export GAZEBO_MODEL_PATH="$HOME/.gazebo/models:/usr/share/gazebo-11/models:/opt/ros/humble/share/turtlebot3_gazebo/models:${CLEAN_MODEL_PATH}"
 export GAZEBO_RESOURCE_PATH="/usr/share/gazebo-11:/opt/ros/humble/share/turtlebot3_gazebo:${GAZEBO_RESOURCE_PATH:-}"
 
-# Build if requested or if install directory does not exist
-if [ "$DO_BUILD" = "true" ] || [ ! -d "$SCRIPT_DIR/install" ]; then
-  echo "📦 Building workspace packages..."
-  colcon build --symlink-install
-fi
+# Always build workspace packages with symlink-install (takes ~1.2s and ensures latest files are active)
+echo "📦 Building workspace packages..."
+colcon build --symlink-install
 
 # Source workspace overlay
 source "$SCRIPT_DIR/install/setup.bash"
@@ -134,6 +140,23 @@ echo ""
 
 if [ "$WEB_ONLY" = "true" ]; then
   ros2 launch turtlebot3_nav2_web web_server.launch.py port:="$PORT"
+elif [ "$SLAM_MODE" = "true" ]; then
+  echo "📡 SLAM MAPPING MODE"
+  echo "  1. Gazebo will open. Use keyboard teleop (in a separate terminal) to drive the robot:"
+  echo "     ros2 run turtlebot3_teleop teleop_keyboard"
+  echo "  2. After mapping all rooms, save the map (in another terminal):"
+  echo "     source /opt/ros/humble/setup.bash && source install/setup.bash"
+  echo "     ros2 run nav2_map_server map_saver_cli -f src/turtlebot3_nav2_web/maps/house_map"
+  echo "  3. Then restart with:  ./run.sh"
+  echo ""
+  ros2 launch turtlebot3_nav2_web simulation.launch.py \
+    model:="$TURTLEBOT3_MODEL" \
+    headless:="$HEADLESS" &
+  SIM_PID=$!
+  sleep 5
+  export TURTLEBOT3_MODEL="$MODEL"
+  ros2 launch slam_toolbox online_sync_launch.py use_sim_time:=True &
+  wait $SIM_PID
 else
   ros2 launch turtlebot3_nav2_web full_system.launch.py \
     model:="$TURTLEBOT3_MODEL" \

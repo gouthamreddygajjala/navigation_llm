@@ -22,7 +22,7 @@
       </div>
       <div>
         <div class="app-title">TURTLEBOT3 NAV2</div>
-        <div class="app-subtitle">Autonomous Navigation Dashboard</div>
+        <div class="app-subtitle">Multi-Room House Simulation • Local Qwen 14B LLM</div>
       </div>
     </div>
 
@@ -95,6 +95,10 @@
         <div class="canvas-overlay bottom-left">
           <div class="layer-toggles">
             <label class="toggle-chip">
+              <input type="checkbox" id="toggle-rooms" checked>
+              <span>Room Labels</span>
+            </label>
+            <label class="toggle-chip">
               <input type="checkbox" id="toggle-scan" checked>
               <span>LiDAR Scan</span>
             </label>
@@ -119,9 +123,57 @@
 
     <!-- Right Column: Control Deck & Telemetry -->
     <aside class="control-sidebar">
+
+      <!-- AI Local LLM Navigator Card -->
+      <div class="deck-card ai-llm-card highlight-card">
+        <div class="deck-title">
+          <div class="ai-header-title">
+            <span class="ai-sparkle">✨</span>
+            <span>LLM Voice & Chat Navigator</span>
+          </div>
+          <span class="badge ai-model-badge" id="ai-model-badge">Qwen 2.5 14B</span>
+        </div>
+
+        <div class="llm-chat-container">
+          <!-- Chat Messages Area -->
+          <div class="chat-messages" id="chat-messages">
+            <div class="chat-msg assistant">
+              <div class="msg-avatar">🤖</div>
+              <div class="msg-content">
+                <div class="msg-bubble">
+                  <strong>AI Mission Control:</strong><br>
+                  Ready! Ask me to navigate to any room in the house (e.g. <em>"Take me to the kitchen"</em>, <em>"Go to living room"</em>, <em>"Head to the study"</em>).
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Suggested Quick Prompts -->
+          <div class="prompt-chips" id="prompt-chips">
+            <button class="prompt-chip" data-prompt="Go to the kitchen">🍳 Kitchen</button>
+            <button class="prompt-chip" data-prompt="Take me to the living room">🛋️ Living Room</button>
+            <button class="prompt-chip" data-prompt="Navigate to the office">💼 Office</button>
+            <button class="prompt-chip" data-prompt="Head over to the study">📚 Study</button>
+            <button class="prompt-chip" data-prompt="Go to the dining room">🍽️ Dining Room</button>
+            <button class="prompt-chip" data-prompt="Return to the foyer dock">🚪 Foyer Dock</button>
+          </div>
+
+          <!-- Prompt Input Form -->
+          <form class="chat-input-bar" id="chat-form">
+            <input type="text" id="chat-input" placeholder="Type instruction, e.g. 'Go to kitchen'..." autocomplete="off">
+            <button type="submit" class="btn btn-ai-send" id="btn-chat-send" title="Send to LLM">
+              <span>Send</span>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </div>
       
       <!-- Target Selection Card -->
-      <div class="deck-card highlight-card">
+      <div class="deck-card">
         <div class="deck-title">
           <span>Target Navigation Point</span>
           <span class="status-indicator ready" id="target-indicator">Ready</span>
@@ -160,14 +212,40 @@
           </button>
         </div>
 
-        <!-- Quick Waypoint Presets -->
+        <!-- Quick House Room Waypoints -->
         <div class="waypoint-presets">
-          <div class="preset-label">Quick Waypoints:</div>
-          <div class="preset-buttons">
-            <button class="preset-chip" data-x="0.0" data-y="0.0" data-yaw="0">Center (0, 0)</button>
-            <button class="preset-chip" data-x="1.4" data-y="-0.4" data-yaw="90">East Corridor</button>
-            <button class="preset-chip" data-x="-0.4" data-y="1.4" data-yaw="180">North Bay</button>
-            <button class="preset-chip" data-x="-2.0" data-y="-0.5" data-yaw="0">Home Dock</button>
+          <div class="preset-label">House Rooms Quick Dispatch:</div>
+          <div class="rooms-grid" id="rooms-preset-grid">
+            <button class="room-chip" data-room="living_room" data-x="5.20" data-y="4.67" data-yaw="0">
+              <span class="room-icon">🛋️</span>
+              <span class="room-name">Living Room</span>
+              <span class="room-dist" id="dist-living_room">--</span>
+            </button>
+            <button class="room-chip" data-room="kitchen" data-x="-4.50" data-y="-2.43" data-yaw="-90">
+              <span class="room-icon">🍳</span>
+              <span class="room-name">Kitchen</span>
+              <span class="room-dist" id="dist-kitchen">--</span>
+            </button>
+            <button class="room-chip" data-room="office" data-x="-2.25" data-y="1.22" data-yaw="90">
+              <span class="room-icon">💼</span>
+              <span class="room-name">Office</span>
+              <span class="room-dist" id="dist-office">--</span>
+            </button>
+            <button class="room-chip" data-room="study" data-x="-4.20" data-y="4.02" data-yaw="90">
+              <span class="room-icon">📚</span>
+              <span class="room-name">Study / Library</span>
+              <span class="room-dist" id="dist-study">--</span>
+            </button>
+            <button class="room-chip" data-room="dining_room" data-x="7.95" data-y="-3.73" data-yaw="-90">
+              <span class="room-icon">🍽️</span>
+              <span class="room-name">Dining Room</span>
+              <span class="room-dist" id="dist-dining_room">--</span>
+            </button>
+            <button class="room-chip" data-room="foyer" data-x="0.00" data-y="0.60" data-yaw="0">
+              <span class="room-icon">🚪</span>
+              <span class="room-name">Foyer Dock</span>
+              <span class="room-dist" id="dist-foyer">--</span>
+            </button>
           </div>
         </div>
       </div>
@@ -209,7 +287,14 @@
           <span>Manual Teleoperation</span>
           <span class="badge keyboard-badge">WASD / Keys</span>
         </div>
-        <div class="teleop-container">
+        <!-- Click the panel to activate keyboard control -->
+        <div id="teleop-enable-hint" style="text-align:center;padding:6px 0 2px;font-size:0.78rem;color:var(--text-muted);cursor:pointer;" onclick="document.getElementById('teleop-area').focus()">
+          🖱️ Click pad to activate keyboard control
+        </div>
+        <div class="teleop-container" id="teleop-area" tabindex="0"
+             style="outline:none;"
+             onfocus="this.style.boxShadow='0 0 0 2px var(--accent-blue)';document.getElementById('teleop-enable-hint').style.color='var(--accent-blue)';document.getElementById('teleop-enable-hint').textContent='⌨️ Keyboard active — WASD to drive';"
+             onblur="this.style.boxShadow='';document.getElementById('teleop-enable-hint').style.color='var(--text-muted)';document.getElementById('teleop-enable-hint').textContent='🖱️ Click pad to activate keyboard control';">
           <div class="key-pad">
             <div class="key-row">
               <button class="key-btn" id="key-forward" data-action="forward">▲ (W)</button>

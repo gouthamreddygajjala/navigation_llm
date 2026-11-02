@@ -44,6 +44,7 @@ from sensor_msgs.msg import LaserScan
 import tf2_ros
 from tf2_ros import Buffer, TransformListener
 from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
+from turtlebot3_nav2_web.llm_navigator import LLMNavigator, HOUSE_ROOMS
 
 
 def yaw_to_quaternion(yaw: float) -> Quaternion:
@@ -77,13 +78,15 @@ class Nav2WebServerNode(Node):
         self.port = self.get_parameter('port').get_parameter_value().integer_value
 
         # Robot state
-        self.robot_pose = {'x': -2.0, 'y': -0.5, 'yaw': 0.0}
+        self.robot_pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
         self.robot_speed = {'linear': 0.0, 'angular': 0.0}
         self.map_data = None
         self.map_metadata = None
         self.current_plan = []
         self.latest_scan_points = []
         self.last_scan_publish_time = 0.0
+        self.last_teleop_time = 0.0
+        self.is_teleoperating = False
 
         # Nav2 Action state
         self.nav_status = 'IDLE'  # IDLE, PLANNING, NAVIGATING, SUCCEEDED, CANCELED, FAILED
@@ -98,6 +101,9 @@ class Nav2WebServerNode(Node):
 
         # Connected WebSockets
         self.ws_clients: Set[web.WebSocketResponse] = set()
+
+        # Local LLM Navigator
+        self.llm_navigator = LLMNavigator()
 
         # TF2 Listener
         self.tf_buffer = Buffer()
@@ -153,7 +159,21 @@ class Nav2WebServerNode(Node):
         # Periodic timer for TF lookup & state broadcast (15 Hz)
         self.create_timer(0.066, self.update_and_broadcast_state, callback_group=self.callback_group)
 
+        # Safety: publish zero velocity once on startup to ensure robot is stopped
+        self._initial_stop_done = False
+        self._initial_stop_timer = self.create_timer(1.0, self._publish_initial_stop, callback_group=self.callback_group)
+
         self.get_logger().info(f'Nav2WebServerNode initialized. Local Web Server will run on http://{self.host}:{self.port}')
+
+    def _publish_initial_stop(self):
+        """Publish zero velocity once on startup to guarantee robot is stationary."""
+        stop = Twist()
+        stop.linear.x = 0.0
+        stop.angular.z = 0.0
+        self.cmd_vel_pub.publish(stop)
+        self.get_logger().info('Safety stop published on startup.')
+        # Cancel this one-shot timer
+        self._initial_stop_timer.cancel()
 
     def map_callback(self, msg: OccupancyGrid):
         try:
@@ -297,6 +317,14 @@ class Nav2WebServerNode(Node):
         if not tf_success:
             self._tf_available = False
 
+        # Teleoperation safety watchdog: stop robot if no teleop message received for > 350ms
+        if self.is_teleoperating and (time.time() - self.last_teleop_time > 0.35):
+            self.is_teleoperating = False
+            stop_msg = Twist()
+            stop_msg.linear.x = 0.0
+            stop_msg.angular.z = 0.0
+            self.cmd_vel_pub.publish(stop_msg)
+
         # Broadcast state
         state_msg = {
             'type': 'robot_state',
@@ -430,8 +458,14 @@ class Nav2WebServerNode(Node):
         msg.linear.x = float(max(-0.26, min(0.26, linear)))
         msg.angular.z = float(max(-1.82, min(1.82, angular)))
         self.cmd_vel_pub.publish(msg)
+        if abs(linear) > 1e-3 or abs(angular) > 1e-3:
+            self.last_teleop_time = time.time()
+            self.is_teleoperating = True
+        else:
+            self.is_teleoperating = False
 
     def emergency_stop(self):
+        self.is_teleoperating = False
         msg = Twist()
         msg.linear.x = 0.0
         msg.angular.z = 0.0
@@ -525,6 +559,12 @@ async def create_app(ros_node: Nav2WebServerNode):
                 'points': ros_node.current_plan
             }))
 
+        # Send house rooms configuration and semantic coordinates
+        await ws.send_str(json.dumps({
+            'type': 'rooms',
+            'rooms': HOUSE_ROOMS
+        }))
+
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -549,6 +589,29 @@ async def create_app(ros_node: Nav2WebServerNode):
                             ros_node.teleop_cmd(lin, ang)
                         elif action == 'stop':
                             ros_node.emergency_stop()
+                        elif action == 'llm_chat':
+                            prompt = str(data.get('prompt', '')).strip()
+                            if prompt:
+                                ros_node.get_logger().info(f'Processing LLM prompt: "{prompt}"')
+                                llm_res = await asyncio.get_event_loop().run_in_executor(
+                                    None, ros_node.llm_navigator.query, prompt, ros_node.robot_pose
+                                )
+                                ros_node.get_logger().info(f'LLM response: {llm_res}')
+                                await ws.send_str(json.dumps({
+                                    'type': 'llm_response',
+                                    'prompt': prompt,
+                                    'result': llm_res
+                                }))
+                                if llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
+                                    tx = float(llm_res['x'])
+                                    ty = float(llm_res['y'])
+                                    tyaw = float(llm_res.get('yaw', 0.0))
+                                    ros_node.navigate_to(tx, ty, tyaw)
+                        elif action == 'get_rooms':
+                            await ws.send_str(json.dumps({
+                                'type': 'rooms',
+                                'rooms': HOUSE_ROOMS
+                            }))
                         elif action == 'request_map':
                             if ros_node.map_data is not None:
                                 await ws.send_str(json.dumps({
@@ -562,6 +625,7 @@ async def create_app(ros_node: Nav2WebServerNode):
                     ros_node.get_logger().warn(f'WS connection closed with exception: {ws.exception()}')
         finally:
             ros_node.ws_clients.discard(ws)
+            ros_node.emergency_stop()
             ros_node.get_logger().info(f'Web client disconnected (Remaining: {len(ros_node.ws_clients)})')
         return ws
 
@@ -593,12 +657,27 @@ async def create_app(ros_node: Nav2WebServerNode):
         ros_node.teleop_cmd(float(data.get('linear', 0.0)), float(data.get('angular', 0.0)))
         return web.json_response({'status': 'ok'})
 
+    async def api_rooms(request):
+        return web.json_response({'rooms': HOUSE_ROOMS})
+
+    async def api_llm_chat(request):
+        data = await request.json()
+        prompt = str(data.get('prompt', '')).strip()
+        llm_res = await asyncio.get_event_loop().run_in_executor(
+            None, ros_node.llm_navigator.query, prompt, ros_node.robot_pose
+        )
+        if llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
+            ros_node.navigate_to(float(llm_res['x']), float(llm_res['y']), float(llm_res.get('yaw', 0.0)))
+        return web.json_response(llm_res)
+
     app.router.add_get('/', index_handler)
     app.router.add_get('/ws', ws_handler)
     app.router.add_get('/api/status', api_status)
+    app.router.add_get('/api/rooms', api_rooms)
     app.router.add_post('/api/navigate', api_navigate)
     app.router.add_post('/api/cancel', api_cancel)
     app.router.add_post('/api/teleop', api_teleop)
+    app.router.add_post('/api/llm_chat', api_llm_chat)
 
     # Static routes with symlink following
     css_dir = os.path.realpath(os.path.join(web_dir, 'css'))
