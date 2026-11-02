@@ -42,13 +42,15 @@
       panY: 0.0
     },
     interaction: {
-      mode: 'goal', // 'goal' or 'pose'
+      mode: 'goal', // 'goal', 'pose', or 'waypoints'
       isDraggingMap: false,
       isSettingPose: false,
       startScreen: { x: 0, y: 0 },
       startPan: { x: 0, y: 0 },
       targetStartWorld: { x: 0, y: 0 }
     },
+    waypoints: [],
+    activeWaypointIndex: 0,
     rooms: {},
     options: {
       showRooms: true,
@@ -92,10 +94,20 @@
   const btnCancelGoal = document.getElementById('btn-cancel-goal');
   const btnModeGoal = document.getElementById('btn-mode-goal');
   const btnModePose = document.getElementById('btn-mode-pose');
+  const btnModeWaypoints = document.getElementById('btn-mode-waypoints');
   const btnCenterRobot = document.getElementById('btn-center-robot');
   const btnFitMap = document.getElementById('btn-fit-map');
   const btnZoomIn = document.getElementById('btn-zoom-in');
   const btnZoomOut = document.getElementById('btn-zoom-out');
+
+  // Multi-Waypoint Mission Planner Elements
+  const btnStartWaypoints = document.getElementById('btn-start-waypoints');
+  const btnClearWaypoints = document.getElementById('btn-clear-waypoints');
+  const waypointsListEl = document.getElementById('waypoints-list');
+  const waypointsCountBadge = document.getElementById('waypoints-count-badge');
+  const tourFullHouse = document.getElementById('tour-full-house');
+  const tourWorkStudy = document.getElementById('tour-work-study');
+  const tourDiningKitchen = document.getElementById('tour-dining-kitchen');
 
   const mouseCoords = document.getElementById('mouse-coords');
   const logConsole = document.getElementById('log-console');
@@ -236,6 +248,17 @@
         break;
       case 'rooms':
         handleRoomsMessage(msg.rooms);
+        break;
+      case 'waypoints_update':
+        if (msg.waypoints) {
+          state.waypoints = msg.waypoints;
+          state.activeWaypointIndex = msg.current_index || 0;
+          renderWaypointsUI();
+        }
+        break;
+      case 'waypoints_progress':
+        state.activeWaypointIndex = msg.current_index || 0;
+        renderWaypointsUI();
         break;
       case 'llm_response':
         handleLLMResponse(msg);
@@ -385,6 +408,7 @@
     state.interaction.mode = 'goal';
     btnModeGoal.classList.add('active');
     btnModePose.classList.remove('active');
+    if (btnModeWaypoints) btnModeWaypoints.classList.remove('active');
     addLog('Interactive Mode: Set Navigation Goal', 'info');
   });
 
@@ -392,8 +416,19 @@
     state.interaction.mode = 'pose';
     btnModePose.classList.add('active');
     btnModeGoal.classList.remove('active');
+    if (btnModeWaypoints) btnModeWaypoints.classList.remove('active');
     addLog('Interactive Mode: Set 2D Initial Pose (AMCL)', 'info');
   });
+
+  if (btnModeWaypoints) {
+    btnModeWaypoints.addEventListener('click', () => {
+      state.interaction.mode = 'waypoints';
+      btnModeWaypoints.classList.add('active');
+      btnModeGoal.classList.remove('active');
+      btnModePose.classList.remove('active');
+      addLog('Interactive Mode: Multi-Waypoint Mode (Click map to add waypoints)', 'info');
+    });
+  }
 
   // --- Mouse & Canvas Interaction ---
   container.addEventListener('mousedown', (e) => {
@@ -410,9 +445,30 @@
       return;
     }
 
-    // Left-click sets target goal or initial pose
+    // Left-click sets target goal, initial pose, or adds waypoint
     if (e.button === 0) {
       const worldPt = screenToWorld(sx, sy);
+
+      // Multi-waypoint mode: click adds waypoint directly
+      if (state.interaction.mode === 'waypoints') {
+        let wpName = `WP ${state.waypoints.length + 1}`;
+        for (const [rId, rInfo] of Object.entries(state.rooms)) {
+          if (Math.hypot(worldPt.wx - rInfo.x, worldPt.wy - rInfo.y) < 1.0) {
+            wpName = `${rInfo.name}`;
+            break;
+          }
+        }
+        state.waypoints.push({
+          x: Math.round(worldPt.wx * 100) / 100,
+          y: Math.round(worldPt.wy * 100) / 100,
+          yaw: 0.0,
+          name: wpName
+        });
+        renderWaypointsUI();
+        addLog(`Added Waypoint #${state.waypoints.length}: (${worldPt.wx.toFixed(2)}, ${worldPt.wy.toFixed(2)}) [${wpName}]`, 'info');
+        return;
+      }
+
       state.interaction.isSettingPose = true;
       state.interaction.targetStartWorld = { x: worldPt.wx, y: worldPt.wy };
 
@@ -643,6 +699,19 @@
       }
 
       addLog(`AI dispatched goal -> ${result.room_name} (${result.x.toFixed(2)}, ${result.y.toFixed(2)})`, 'success');
+    } else if (result.action === 'navigate_waypoints' && result.waypoints && result.waypoints.length > 0) {
+      state.waypoints = result.waypoints;
+      state.activeWaypointIndex = 0;
+      renderWaypointsUI();
+
+      contentHtml += `
+          <div class="chat-target-tag">
+            <span>🗺️</span>
+            <span>Tour: <strong>${result.waypoints.map(w => escapeHtml(w.name || 'Point')).join(' ➔ ')}</strong></span>
+          </div>
+      `;
+
+      addLog(`AI planned tour with ${result.waypoints.length} waypoints. Starting navigation...`, 'success');
     }
 
     contentHtml += `</div>`;
@@ -967,6 +1036,9 @@
       drawTargetMarker(gx, gy, state.target.yaw);
     }
 
+    // 5.5 Draw Multi-Waypoints
+    drawWaypoints();
+
     // 6. Draw Robot Footprint & Orientation
     if (state.map.metadata) {
       const { gx, gy } = worldToGrid(state.robot.x, state.robot.y);
@@ -1172,6 +1244,206 @@
 
     ctx.restore();
   }
+
+  // --- Multi-Waypoint Mission Management ---
+  function renderWaypointsUI() {
+    if (!waypointsListEl || !waypointsCountBadge) return;
+
+    const count = state.waypoints.length;
+    waypointsCountBadge.textContent = `${count} Waypoint${count === 1 ? '' : 's'}`;
+
+    if (btnStartWaypoints) {
+      btnStartWaypoints.disabled = count === 0;
+    }
+
+    if (count === 0) {
+      waypointsListEl.innerHTML = '<div class="waypoints-empty" id="waypoints-empty">No waypoints queued yet. Click on the map or ask the AI assistant.</div>';
+      return;
+    }
+
+    waypointsListEl.innerHTML = '';
+    state.waypoints.forEach((wp, index) => {
+      const item = document.createElement('div');
+      item.className = 'waypoint-item' + (index === state.activeWaypointIndex ? ' active-waypoint' : '');
+
+      const num = document.createElement('span');
+      num.className = 'waypoint-num';
+      num.textContent = index + 1;
+
+      const coords = document.createElement('div');
+      coords.className = 'waypoint-coords';
+      const displayName = wp.name ? wp.name : `Point ${index + 1}`;
+      coords.innerHTML = `<strong>${escapeHtml(displayName)}</strong> <span class="waypoint-tag">(${wp.x.toFixed(2)}, ${wp.y.toFixed(2)})</span>`;
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'waypoint-delete';
+      delBtn.title = 'Remove waypoint';
+      delBtn.innerHTML = '✕';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.waypoints.splice(index, 1);
+        if (state.activeWaypointIndex >= state.waypoints.length) {
+          state.activeWaypointIndex = Math.max(0, state.waypoints.length - 1);
+        }
+        renderWaypointsUI();
+        addLog(`Removed waypoint #${index + 1}`, 'info');
+      });
+
+      item.appendChild(num);
+      item.appendChild(coords);
+      item.appendChild(delBtn);
+
+      item.addEventListener('click', () => {
+        if (state.map.metadata) {
+          const { gx, gy } = worldToGrid(wp.x, wp.y);
+          const rect = container.getBoundingClientRect();
+          state.viewport.panX = rect.width / 2 - gx * state.viewport.scale;
+          state.viewport.panY = rect.height / 2 - gy * state.viewport.scale;
+        }
+      });
+
+      waypointsListEl.appendChild(item);
+    });
+  }
+
+  function drawWaypoints() {
+    if (!state.waypoints || state.waypoints.length === 0 || !state.map.metadata) return;
+
+    ctx.save();
+
+    // 1. Draw dashed connecting lines between waypoints
+    if (state.waypoints.length > 1) {
+      ctx.beginPath();
+      const firstPt = worldToGrid(state.waypoints[0].x, state.waypoints[0].y);
+      ctx.moveTo(firstPt.gx, firstPt.gy);
+      for (let i = 1; i < state.waypoints.length; i++) {
+        const pt = worldToGrid(state.waypoints[i].x, state.waypoints[i].y);
+        ctx.lineTo(pt.gx, pt.gy);
+      }
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2.0 / state.viewport.scale;
+      ctx.setLineDash([6 / state.viewport.scale, 4 / state.viewport.scale]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 2. Draw each numbered waypoint
+    state.waypoints.forEach((wp, index) => {
+      const { gx, gy } = worldToGrid(wp.x, wp.y);
+      const isActive = index === state.activeWaypointIndex;
+      const radius = (isActive ? 11 : 9) / state.viewport.scale;
+
+      // Active glowing halo
+      if (isActive) {
+        ctx.beginPath();
+        ctx.arc(gx, gy, radius * 1.8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.25)';
+        ctx.fill();
+      }
+
+      // Marker circle
+      ctx.beginPath();
+      ctx.arc(gx, gy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = isActive ? '#f59e0b' : '#3b82f6';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.8 / state.viewport.scale;
+      ctx.shadowColor = isActive ? '#f59e0b' : '#3b82f6';
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Number text inside circle
+      const fontSize = (isActive ? 11 : 10) / state.viewport.scale;
+      ctx.font = `700 ${fontSize}px "Plus Jakarta Sans", sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`${index + 1}`, gx, gy);
+
+      // Name label badge
+      if (wp.name) {
+        const labelFontSize = 9.5 / state.viewport.scale;
+        ctx.font = `600 ${labelFontSize}px "Plus Jakarta Sans", sans-serif`;
+        ctx.fillStyle = '#fef3c7';
+        ctx.textAlign = 'center';
+        ctx.fillText(wp.name, gx, gy - radius - 4 / state.viewport.scale);
+      }
+    });
+
+    ctx.restore();
+  }
+
+  // Waypoint controls
+  if (btnStartWaypoints) {
+    btnStartWaypoints.addEventListener('click', () => {
+      if (!state.connected) {
+        alert('Local Nav2 server is not connected!');
+        return;
+      }
+      if (state.waypoints.length === 0) return;
+      state.ws.send(JSON.stringify({
+        action: 'navigate_waypoints',
+        waypoints: state.waypoints
+      }));
+      addLog(`Started Multi-Waypoint Tour with ${state.waypoints.length} waypoints.`, 'info');
+    });
+  }
+
+  if (btnClearWaypoints) {
+    btnClearWaypoints.addEventListener('click', () => {
+      state.waypoints = [];
+      state.activeWaypointIndex = 0;
+      renderWaypointsUI();
+      if (state.connected) {
+        state.ws.send(JSON.stringify({ action: 'clear_waypoints' }));
+      }
+      addLog('Cleared all waypoints from mission planner.', 'info');
+    });
+  }
+
+  function setTourPreset(roomKeys) {
+    state.waypoints = [];
+    roomKeys.forEach(key => {
+      const room = state.rooms[key];
+      if (room) {
+        state.waypoints.push({
+          x: room.x,
+          y: room.y,
+          yaw: (room.yaw_deg || 0) * Math.PI / 180,
+          name: room.name
+        });
+      }
+    });
+    state.activeWaypointIndex = 0;
+    renderWaypointsUI();
+    if (btnModeWaypoints) {
+      state.interaction.mode = 'waypoints';
+      btnModeWaypoints.classList.add('active');
+      btnModeGoal.classList.remove('active');
+      btnModePose.classList.remove('active');
+    }
+    addLog(`Loaded tour preset with ${state.waypoints.length} rooms.`, 'info');
+  }
+
+  if (tourFullHouse) {
+    tourFullHouse.addEventListener('click', () => {
+      setTourPreset(['living_room', 'dining_room', 'kitchen', 'office', 'foyer']);
+    });
+  }
+  if (tourWorkStudy) {
+    tourWorkStudy.addEventListener('click', () => {
+      setTourPreset(['office', 'study', 'living_room']);
+    });
+  }
+  if (tourDiningKitchen) {
+    tourDiningKitchen.addEventListener('click', () => {
+      setTourPreset(['foyer', 'dining_room', 'kitchen']);
+    });
+  }
+
+  // Initial UI Render
+  renderWaypointsUI();
 
   // --- Start App ---
   connectWebSocket();

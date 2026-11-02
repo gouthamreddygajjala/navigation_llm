@@ -38,7 +38,7 @@ from geometry_msgs.msg import (
     Quaternion,
     Twist
 )
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateToPose, NavigateThroughPoses
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import LaserScan
 import tf2_ros
@@ -150,11 +150,17 @@ class Nav2WebServerNode(Node):
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         self.goal_pose_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
 
-        # Nav2 Action Client
+        # Nav2 Action Clients
         self.nav_client = ActionClient(
             self, NavigateToPose, 'navigate_to_pose',
             callback_group=self.callback_group
         )
+        self.nav_through_poses_client = ActionClient(
+            self, NavigateThroughPoses, 'navigate_through_poses',
+            callback_group=self.callback_group
+        )
+        self.active_waypoints = []
+        self.active_waypoint_index = 0
 
         # Periodic timer for TF lookup & state broadcast (15 Hz)
         self.create_timer(0.066, self.update_and_broadcast_state, callback_group=self.callback_group)
@@ -410,12 +416,25 @@ class Nav2WebServerNode(Node):
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('Goal navigation succeeded!')
             self.nav_status = 'SUCCEEDED'
+            # If currently in a sequential waypoint tour, step to next
+            if self.active_waypoints and self.active_waypoint_index + 1 < len(self.active_waypoints):
+                self.active_waypoint_index += 1
+                self._dispatch_next_waypoint()
+                return
+            elif self.active_waypoints:
+                self.broadcast_json_threadsafe({
+                    'type': 'waypoints_update',
+                    'waypoints': self.active_waypoints,
+                    'status': 'SUCCEEDED'
+                })
         elif status == GoalStatus.STATUS_CANCELED:
             self.get_logger().info('Goal navigation was canceled.')
             self.nav_status = 'CANCELED'
+            self.active_waypoints = []
         else:
             self.get_logger().warn(f'Goal failed with status code: {status}')
             self.nav_status = 'FAILED'
+            self.active_waypoints = []
 
         self.active_goal_handle = None
         self.current_plan = []
@@ -427,9 +446,154 @@ class Nav2WebServerNode(Node):
             cancel_future.add_done_callback(lambda f: self.get_logger().info('Goal cancel acknowledged'))
             self.active_goal_handle = None
         
+        self.active_waypoints = []
+        self.active_waypoint_index = 0
         self.nav_status = 'CANCELED'
         self.current_plan = []
         self.emergency_stop()
+        self.broadcast_json_threadsafe({
+            'type': 'waypoints_update',
+            'waypoints': [],
+            'status': 'CANCELED'
+        })
+
+    def navigate_waypoints(self, waypoints: list):
+        if not waypoints:
+            self.get_logger().warn('navigate_waypoints called with empty list')
+            return False
+
+        self.get_logger().info(f'Received multi-waypoint navigation request ({len(waypoints)} waypoints)')
+        self.active_waypoints = [dict(w) for w in waypoints]
+        self.active_waypoint_index = 0
+        self.nav_status = 'PLANNING'
+        self.current_plan = []
+
+        if self.active_goal_handle is not None:
+            self.cancel_navigation()
+
+        self.active_waypoints = [dict(w) for w in waypoints]
+        self.active_waypoint_index = 0
+        self.nav_status = 'PLANNING'
+
+        self.broadcast_json_threadsafe({
+            'type': 'waypoints_update',
+            'waypoints': self.active_waypoints,
+            'current_index': 0,
+            'status': 'NAVIGATING'
+        })
+
+        if self.nav_through_poses_client.wait_for_server(timeout_sec=1.5):
+            self.get_logger().info('Using Nav2 NavigateThroughPoses action server')
+            goal_msg = NavigateThroughPoses.Goal()
+            now_msg = self.get_clock().now().to_msg()
+            for w in self.active_waypoints:
+                pose = PoseStamped()
+                pose.header.frame_id = 'map'
+                pose.header.stamp = now_msg
+                pose.pose.position.x = float(w['x'])
+                pose.pose.position.y = float(w['y'])
+                pose.pose.position.z = 0.0
+                pose.pose.orientation = yaw_to_quaternion(float(w.get('yaw', 0.0)))
+                goal_msg.poses.append(pose)
+
+            first_w = self.active_waypoints[0]
+            self.active_goal_target = {'x': round(first_w['x'], 3), 'y': round(first_w['y'], 3)}
+
+            send_future = self.nav_through_poses_client.send_goal_async(
+                goal_msg,
+                feedback_callback=self._through_poses_feedback_callback
+            )
+            send_future.add_done_callback(self._through_poses_goal_response_callback)
+            return True
+        else:
+            self.get_logger().info('NavigateThroughPoses not immediately available; using robust sequential dispatcher')
+            self._dispatch_next_waypoint()
+            return True
+
+    def _through_poses_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn('NavigateThroughPoses goal rejected by server, falling back to sequential dispatch')
+            self._dispatch_next_waypoint()
+            return
+        self.get_logger().info('NavigateThroughPoses goal accepted by Nav2 server')
+        self.active_goal_handle = goal_handle
+        self.nav_status = 'NAVIGATING'
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._through_poses_result_callback)
+
+    def _through_poses_feedback_callback(self, feedback_msg):
+        fb = feedback_msg.feedback
+        self.nav_status = 'NAVIGATING'
+        rem_poses = int(fb.number_of_poses_remaining)
+        total_poses = len(self.active_waypoints)
+        curr_idx = max(0, total_poses - rem_poses)
+        self.active_waypoint_index = curr_idx
+
+        self.nav_feedback = {
+            'distance_remaining': round(float(fb.distance_remaining), 2),
+            'navigation_time': round(float(fb.navigation_time.sec + fb.navigation_time.nanosec * 1e-9), 1),
+            'estimated_time_remaining': round(float(fb.estimated_time_remaining.sec + fb.estimated_time_remaining.nanosec * 1e-9), 1),
+            'number_of_recoveries': int(fb.number_of_recoveries),
+            'waypoint_index': curr_idx,
+            'waypoints_remaining': rem_poses,
+            'waypoints_total': total_poses
+        }
+
+        self.broadcast_json_threadsafe({
+            'type': 'waypoints_progress',
+            'current_index': curr_idx,
+            'remaining': rem_poses,
+            'total': total_poses
+        })
+
+    def _through_poses_result_callback(self, future):
+        result = future.result()
+        status = result.status
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info('Multi-waypoint tour succeeded!')
+            self.nav_status = 'SUCCEEDED'
+            self.broadcast_json_threadsafe({
+                'type': 'waypoints_update',
+                'waypoints': self.active_waypoints,
+                'status': 'SUCCEEDED'
+            })
+        elif status == GoalStatus.STATUS_CANCELED:
+            self.get_logger().info('Multi-waypoint tour was canceled.')
+            self.nav_status = 'CANCELED'
+            self.broadcast_json_threadsafe({
+                'type': 'waypoints_update',
+                'waypoints': self.active_waypoints,
+                'status': 'CANCELED'
+            })
+        else:
+            self.get_logger().warn(f'Multi-waypoint tour finished with status code: {status}')
+            self.nav_status = 'FAILED'
+
+        self.active_goal_handle = None
+        self.current_plan = []
+
+    def _dispatch_next_waypoint(self):
+        """Sequential waypoint dispatcher fallback"""
+        if self.active_waypoint_index >= len(self.active_waypoints):
+            self.get_logger().info('All sequential waypoints completed!')
+            self.nav_status = 'SUCCEEDED'
+            self.broadcast_json_threadsafe({
+                'type': 'waypoints_update',
+                'waypoints': self.active_waypoints,
+                'status': 'SUCCEEDED'
+            })
+            return
+
+        wp = self.active_waypoints[self.active_waypoint_index]
+        self.get_logger().info(f'Navigating to waypoint {self.active_waypoint_index + 1}/{len(self.active_waypoints)}: ({wp["x"]}, {wp["y"]})')
+        self.broadcast_json_threadsafe({
+            'type': 'waypoints_progress',
+            'current_index': self.active_waypoint_index,
+            'remaining': len(self.active_waypoints) - self.active_waypoint_index,
+            'total': len(self.active_waypoints)
+        })
+        self.navigate_to(float(wp['x']), float(wp['y']), float(wp.get('yaw', 0.0)))
 
     def set_initial_pose(self, x: float, y: float, yaw: float):
         self.get_logger().info(f'Setting initial AMCL pose: ({x:.2f}, {y:.2f}, yaw={yaw:.2f} rad)')
@@ -565,6 +729,15 @@ async def create_app(ros_node: Nav2WebServerNode):
             'rooms': HOUSE_ROOMS
         }))
 
+        # Send active waypoints if any exist
+        if ros_node.active_waypoints:
+            await ws.send_str(json.dumps({
+                'type': 'waypoints_update',
+                'waypoints': ros_node.active_waypoints,
+                'current_index': ros_node.active_waypoint_index,
+                'status': ros_node.nav_status
+            }))
+
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -576,6 +749,17 @@ async def create_app(ros_node: Nav2WebServerNode):
                             y = float(data['y'])
                             yaw = float(data.get('yaw', 0.0))
                             ros_node.navigate_to(x, y, yaw)
+                        elif action == 'navigate_waypoints':
+                            wps = data.get('waypoints', [])
+                            ros_node.navigate_waypoints(wps)
+                        elif action == 'clear_waypoints':
+                            ros_node.active_waypoints = []
+                            ros_node.active_waypoint_index = 0
+                            ros_node.broadcast_json_threadsafe({
+                                'type': 'waypoints_update',
+                                'waypoints': [],
+                                'status': 'IDLE'
+                            })
                         elif action == 'cancel':
                             ros_node.cancel_navigation()
                         elif action == 'initial_pose':
@@ -602,7 +786,9 @@ async def create_app(ros_node: Nav2WebServerNode):
                                     'prompt': prompt,
                                     'result': llm_res
                                 }))
-                                if llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
+                                if llm_res and llm_res.get('action') == 'navigate_waypoints' and 'waypoints' in llm_res:
+                                    ros_node.navigate_waypoints(llm_res['waypoints'])
+                                elif llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
                                     tx = float(llm_res['x'])
                                     ty = float(llm_res['y'])
                                     tyaw = float(llm_res.get('yaw', 0.0))
@@ -660,13 +846,21 @@ async def create_app(ros_node: Nav2WebServerNode):
     async def api_rooms(request):
         return web.json_response({'rooms': HOUSE_ROOMS})
 
+    async def api_waypoints(request):
+        data = await request.json()
+        wps = data.get('waypoints', [])
+        success = ros_node.navigate_waypoints(wps)
+        return web.json_response({'status': 'ok' if success else 'failed', 'count': len(wps)})
+
     async def api_llm_chat(request):
         data = await request.json()
         prompt = str(data.get('prompt', '')).strip()
         llm_res = await asyncio.get_event_loop().run_in_executor(
             None, ros_node.llm_navigator.query, prompt, ros_node.robot_pose
         )
-        if llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
+        if llm_res and llm_res.get('action') == 'navigate_waypoints' and 'waypoints' in llm_res:
+            ros_node.navigate_waypoints(llm_res['waypoints'])
+        elif llm_res and llm_res.get('action') == 'navigate' and 'x' in llm_res and 'y' in llm_res:
             ros_node.navigate_to(float(llm_res['x']), float(llm_res['y']), float(llm_res.get('yaw', 0.0)))
         return web.json_response(llm_res)
 
@@ -675,6 +869,7 @@ async def create_app(ros_node: Nav2WebServerNode):
     app.router.add_get('/api/status', api_status)
     app.router.add_get('/api/rooms', api_rooms)
     app.router.add_post('/api/navigate', api_navigate)
+    app.router.add_post('/api/waypoints', api_waypoints)
     app.router.add_post('/api/cancel', api_cancel)
     app.router.add_post('/api/teleop', api_teleop)
     app.router.add_post('/api/llm_chat', api_llm_chat)

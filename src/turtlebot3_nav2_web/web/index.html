@@ -65,6 +65,14 @@
               </svg>
               <span>Set Initial Pose</span>
             </button>
+            <button class="tool-btn" id="btn-mode-waypoints" title="Click on map to queue multiple waypoints in tour sequence">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="6" cy="6" r="3"/>
+                <circle cx="18" cy="18" r="3"/>
+                <path d="M9 6h6a3 3 0 0 1 3 3v6"/>
+              </svg>
+              <span>Multi-Waypoint Mode</span>
+            </button>
           </div>
 
           <div class="tool-divider"></div>
@@ -150,11 +158,13 @@
 
           <!-- Suggested Quick Prompts -->
           <div class="prompt-chips" id="prompt-chips">
+            <button class="prompt-chip" data-prompt="Go to living room and then kitchen and then dining">🗺️ Tour: Living ➔ Kitchen ➔ Dining</button>
+            <button class="prompt-chip" data-prompt="Move forward by 1 meter">⬆️ Move forward 1m</button>
+            <button class="prompt-chip" data-prompt="Rotate the robot by 20 degrees">🔄 Rotate 20°</button>
+            <button class="prompt-chip" data-prompt="Move forward by 1 meter and take left by 1 meter">↗️ Forward 1m & Left 1m</button>
             <button class="prompt-chip" data-prompt="Go to the kitchen">🍳 Kitchen</button>
             <button class="prompt-chip" data-prompt="Take me to the living room">🛋️ Living Room</button>
             <button class="prompt-chip" data-prompt="Navigate to the office">💼 Office</button>
-            <button class="prompt-chip" data-prompt="Head over to the study">📚 Study</button>
-            <button class="prompt-chip" data-prompt="Go to the dining room">🍽️ Dining Room</button>
             <button class="prompt-chip" data-prompt="Return to the foyer dock">🚪 Foyer Dock</button>
           </div>
 
@@ -246,6 +256,45 @@
               <span class="room-name">Foyer Dock</span>
               <span class="room-dist" id="dist-foyer">--</span>
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Multi-Waypoint Mission Planner Card -->
+      <div class="deck-card waypoints-card" id="waypoints-card">
+        <div class="deck-title">
+          <span>Waypoint Mission Planner</span>
+          <span class="badge waypoint-badge" id="waypoints-count-badge">0 Waypoints</span>
+        </div>
+        <div class="waypoints-info-hint">
+          📍 Click <strong>Multi-Waypoint Mode</strong> in the map toolbar, then click anywhere on the map to add waypoints.
+        </div>
+        <!-- Ordered Waypoint Pills Container -->
+        <div class="waypoints-list" id="waypoints-list">
+          <div class="waypoints-empty" id="waypoints-empty">No waypoints queued yet. Click on the map or ask the AI assistant.</div>
+        </div>
+        <!-- Mission Action Buttons -->
+        <div class="deck-actions waypoints-actions">
+          <button class="btn btn-primary" id="btn-start-waypoints" disabled>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <span>Start Waypoint Tour</span>
+          </button>
+          <button class="btn btn-secondary" id="btn-clear-waypoints">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Clear</span>
+          </button>
+        </div>
+        <!-- Preset Tours -->
+        <div class="waypoint-presets">
+          <div class="preset-label">Quick Tour Presets:</div>
+          <div class="preset-tour-chips">
+            <button class="tour-chip" id="tour-full-house">🏰 Full House Tour (5 Rooms)</button>
+            <button class="tour-chip" id="tour-work-study">💼 Work & Study</button>
+            <button class="tour-chip" id="tour-dining-kitchen">🍽️ Kitchen & Dining</button>
           </div>
         </div>
       </div>
